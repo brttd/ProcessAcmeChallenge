@@ -1,0 +1,162 @@
+<?php
+
+class ProcessAcmeChallenge extends Process {
+
+    public $path = '/.well-known/acme-challenge/';
+
+    public static function getModuleInfo() {
+        return [
+            'title' => 'ACME Challenges',
+            'summary' => 'Manage tokens for /.well-known/acme-challenge/',
+            'version' => 1,
+            'permanent' => false,
+            'autoload' => true,
+            'singular' => true,
+            'permission' => 'acme-admin',
+
+            'page' => [
+                'name' => 'acme-challenge',
+                'title' => 'ACME Challenges',
+                'parent' => 'setup'
+            ],
+            'icon' => 'lock'
+        ];
+    }
+
+    public function init() {
+        parent::init();
+
+        if (isset($_SERVER['REQUEST_URI']) &&
+            substr($_SERVER['REQUEST_URI'], 0, strlen($this->path)) === $this->path) {
+            $this->addHook('ProcessPageView::pageNotFound', $this, 'tokenResponse');
+		}
+    }
+
+    public function tokenResponse($event) {
+        $url = $this->input->url();
+
+        $token = $this->database->quote(substr($_SERVER['REQUEST_URI'], strlen($this->path)));
+
+        $entry = $this->database->query("SELECT response FROM {$this->className} WHERE token={$token}");
+
+        $entry = $entry->fetch(PDO::FETCH_ASSOC);
+
+        if ($entry) {
+            header("Content-Type: text/plain", true, 200);
+            header("HTTP/1.1 200 OK");
+            http_response_code(404);
+            
+            echo $entry['response'];
+
+            exit();
+        }
+
+    }
+
+    public function ___execute() {
+        $this->setFuel('processHeadline', __('ACME Challenge Tokens'));
+
+        if ($this->input->get->delete) {
+            $id = $this->sanitizer->int($this->input->get->delete);
+
+            $entry = $this->database->query("SELECT id, token, response FROM {$this->className} WHERE id={$id}");
+
+            $entry = $entry->fetch(PDO::FETCH_ASSOC);
+
+            if ($entry) {
+                $query = $this->database->query("DELETE FROM {$this->className} WHERE id={$id}");
+
+                $out = htmlentities($entry['token']) . ' = ' . htmlentities($entry['response']);
+
+                $this->message('Deleted challenge ' . $out);
+            } else {
+                $this->error("Could not find entry `{$id}`");
+            }
+        }
+
+        $form = $this->modules->get('InputfieldForm');
+
+        $f_token = $this->modules->get('InputfieldText');
+        $f_token->attr('name', 'token');
+        $f_token->label = 'Token';
+        $f_token->required = true;
+        $f_token->columnWidth = 33;
+        $form->add($f_token);
+
+        $f_response = $this->modules->get('InputfieldText');
+        $f_response->attr('name', 'response');
+        $f_response->label = 'Response';
+        $f_response->required = true;
+        $f_response->columnWidth = 66;
+        $form->add($f_response);
+
+        $submit = $this->wire->modules->get('InputfieldSubmit');
+		$submit->value = 'Add';
+        $form->add($submit);
+
+        if ($this->input->post->submit === $submit->value) {
+			$form->processInput($this->input->post);
+
+            if (count($form->getErrors())) {
+				$this->warning('Please fix errors and try again');
+			} else {
+                $token = $this->database->quote($f_token->value);
+                $response = $this->database->quote($f_response->value);
+
+                $query = $this->database->query("INSERT INTO {$this->className}(token,response) VALUES ({$token},{$response})");
+
+                $this->message('Added');
+
+                $f_token->attr('value', '');
+                $f_response->attr('value', '');
+			}
+        }
+
+        $table = $this->modules->get("MarkupAdminDataTable");
+		$table->setEncodeEntities(false);
+
+        $table->headerRow([
+            'Token',
+            'Value',
+            'Delete'
+        ]);
+
+        //List all current tokens
+        $query = $this->database->query("SELECT id, token, response FROM {$this->className}");
+        
+        $del_btn = $this->modules->get('InputfieldButton');
+		$del_btn->attr('value', 'Delete');
+		$del_btn->icon = 'trash';
+		$del_btn->setSecondary(true);
+
+        while ($row = $query->fetch(PDO::FETCH_ASSOC)) {
+            $del_btn->attr('href', '?delete=' . $row['id']);
+
+            $table->row([
+                htmlentities($row['token']),
+                htmlentities($row['response']),
+                '<small>' . $del_btn->render() . '</small>'
+            ]);
+        }
+
+        return $table->render() . $form->render();
+    }
+
+    public function ___install() {
+        parent::___install();
+
+        $this->database->query("CREATE TABLE {$this->className} (" .
+            "id int unsigned NOT NULL auto_increment, " .
+            "token varchar(255) NOT NULL DEFAULT '', " .
+            "response varchar(255) NOT NULL DEFAULT '', " .
+            "PRIMARY KEY(id), " .
+            "UNIQUE KEY(token) " .
+        ")");
+    }
+
+    public function ___uninstall() {
+        parent::___uninstall();
+
+		$this->db->query("DROP TABLE {$this->className}");
+	}
+}
